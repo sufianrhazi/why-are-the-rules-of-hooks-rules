@@ -4,14 +4,11 @@ export function mount(Component) {
   // The component's instance state
   const instance = {
     Component,
-    initialized: false,
-    hookStateIndex: 0,
-    hookState: [],
+    hookState: new Map(),
   };
 
   // Render the component
   render(instance);
-  instance.initialized = true;
 
   // Unmount cleans up effects
   return () => {
@@ -29,72 +26,82 @@ function render(instance) {
 
   activeInstance = instance;
 
-  // Reset execution index before calling
-  activeInstance.hookStateIndex = 0;
+  // Set hooks as inactive unless called
+  for (const [key, slot] of activeInstance.hookState) {
+    slot.active = false;
+  }
   activeInstance.Component();
+
+  // Clean up inactive hooks
+  const toRemove = [];
+  for (const [key, slot] of activeInstance.hookState) {
+    if (slot.type === "useEffect" && !slot.active) {
+      slot.cleanupFn?.();
+      toRemove.push(key);
+    }
+  }
+  for (const key of toRemove) {
+    activeInstance.hookState.delete(key);
+  }
 
   // Restore previous active instance
   activeInstance = prevInstance;
 }
 
-export function useState(initialValue) {
+export function useState(key, initialValue) {
   if (activeInstance === undefined) {
     throw new Error("Invariant: useState() called outside of a component!");
   }
   const instance = activeInstance;
-  let slot;
-  if (!instance.initialized) {
-    // On first render, add new slot to the execution index
+  let slot = instance.hookState.get(key);
+  if (!slot) {
+    // On new key, add new slot
     slot = {
       type: "useState",
+      active: true,
       value: typeof initialValue === "function" ? initialValue() : initialValue,
       setValue: (setter) => {
-        let newValue;
-        if (typeof setter === "function") {
-          newValue = setter(slot.value);
-        } else {
-          newValue = setter;
-        }
+        let newValue =
+          typeof setter === "function" ? setter(slot.value) : setter;
         if (slot.value !== newValue) {
-          // Trigger rerender on state change
           slot.value = newValue;
-          render(instance);
+          if (slot.active) {
+            // Trigger rerender when active
+            render(instance);
+          }
         }
       },
     };
-    instance.hookState.push(slot);
+    instance.hookState.set(key, slot);
   } else {
-    // On update, get next slot state from execution index
-    slot = instance.hookState[instance.hookStateIndex];
-    instance.hookStateIndex += 1;
-    if (!slot || slot.type !== "useState") {
+    if (slot.type !== "useState") {
       throw new Error("Invariant: you broke the rules!");
     }
+    slot.active = true;
   }
   return [slot.value, slot.setValue];
 }
 
-export function useMemo(fn, dependencies) {
+export function useMemo(key, fn, dependencies) {
   if (activeInstance === undefined) {
     throw new Error("Invariant: useState() called outside of a component!");
   }
   const instance = activeInstance;
-  let slot;
-  if (!instance.initialized) {
-    // On first render, add new slot to the execution index
+  let slot = instance.hookState.get(key);
+  if (!slot) {
+    // On new key, add new slot
     slot = {
       type: "useMemo",
+      active: true,
       value: fn(),
       dependencies,
     };
-    instance.hookState.push(slot);
+    instance.hookState.set(key, slot);
   } else {
-    // On update, get next slot state from execution index
-    slot = instance.hookState[instance.hookStateIndex];
-    instance.hookStateIndex += 1;
-    if (!slot || slot.type !== "useMemo") {
+    if (slot.type !== "useMemo") {
       throw new Error("Invariant: you broke the rules!");
     }
+    slot.active = true;
     let cacheHit = true;
     for (let i = 0; i < dependencies.length; ++i) {
       if (dependencies[i] !== slot.dependencies[i]) {
@@ -110,27 +117,26 @@ export function useMemo(fn, dependencies) {
   return slot.value;
 }
 
-export function useEffect(fn, dependencies) {
+export function useEffect(key, fn, dependencies) {
   if (activeInstance === undefined) {
     throw new Error("Invariant: useState() called outside of a component!");
   }
   const instance = activeInstance;
-  let slot;
-  if (!instance.initialized) {
-    // On first render, add new slot to the execution index
+  let slot = instance.hookState.get(key);
+  if (!slot) {
+    // On new key, add new slot
     slot = {
       type: "useEffect",
+      active: true,
       cleanupFn: fn(),
       dependencies,
     };
-    instance.hookState.push(slot);
+    instance.hookState.set(key, slot);
   } else {
-    // On update, get next slot state from execution index
-    slot = instance.hookState[instance.hookStateIndex];
-    instance.hookStateIndex += 1;
-    if (!slot || slot.type !== "useEffect") {
+    if (slot.type !== "useEffect") {
       throw new Error("Invariant: you broke the rules!");
     }
+    slot.active = true;
     let cacheHit = true;
     for (let i = 0; i < dependencies.length; ++i) {
       if (dependencies[i] !== slot.dependencies[i]) {
